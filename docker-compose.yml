@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:18
+
+    container_name: smarttj-postgres
+
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}
+
+    volumes:
+      - postgres_data:/var/lib/postgresql
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    networks:
+      - smarttj-network
+
+  redis:
+    image: redis:8-alpine
+    container_name: smarttj-redis
+    restart: unless-stopped
+
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+
+    volumes:
+      - redis-data:/data
+
+    healthcheck:
+      test: ["CMD-SHELL", 'redis-cli -a "$$REDIS_PASSWORD" ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--requirepass",
+        "${REDIS_PASSWORD}",
+      ]
+
+    networks:
+      - smarttj-network
+
+volumes:
+  postgres_data:
+  redis-data:
+
+networks:
+  smarttj-network:
+    external: true
