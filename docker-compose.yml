@@ -51,17 +51,6 @@ services:
     networks:
       - smarttj-network
 
-  grafana:
-    image: grafana/grafana:13.2.3
-    container_name: grafana
-    restart: unless-stopped
-
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=${GRAFANA_URL}
-      - GF_SERVER_SERVE_FROM_SUB_PATH=true
-
 volumes:
   postgres_data:
   redis-data:
