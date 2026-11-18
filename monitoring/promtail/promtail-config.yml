@@ -1,0 +1,271 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # ============================================================================
+  # 1. ФАЙЛОВЫЕ ЛОГИ МИКРОСЕРВИСОВ (/logs/* из окружений сервисов)
+  # Формат: Winston DailyRotateFile JSON (combined-YYYY-MM-DD.log, error-YYYY-MM-DD.log)
+  # ============================================================================
+
+  # --- smarttj-backend (/logs/*.log) ---
+  - job_name: smarttj-backend-files
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: smarttj-logs
+          service: smarttj-backend
+          source: file
+          __path__: /var/log/smarttj/backend/*.log
+    pipeline_stages:
+      - regex:
+          source: filename
+          expression: '.*/(?P<log_type>combined|error)-\d{4}-\d{2}-\d{2}\.log$'
+      - json:
+          expressions:
+            level: level
+            message: message
+            context: context
+            timestamp: timestamp
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - labels:
+          level:
+          context:
+          log_type:
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+          action_on_failure: skip
+
+  # --- smarttj-backend PM2 логи (/logs/pm2/*.log, если запущен через PM2) ---
+  - job_name: smarttj-backend-pm2
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: smarttj-logs
+          service: smarttj-backend
+          source: file
+          log_type: pm2
+          __path__: /var/log/smarttj/backend/pm2/*.log
+    pipeline_stages:
+      - multiline:
+          firstline: '^(\d{4}-\d{2}-\d{2}|\x1b\[|\[Nest\])'
+          max_wait_time: 3s
+      - replace:
+          expression: '\x1b\[[0-9;]*[a-zA-Z]'
+          replace: ''
+      - regex:
+          expression: '(?P<raw_level>LOG|ERROR|WARN|DEBUG|VERBOSE)'
+      - template:
+          source: level
+          template: >-
+            {{- if eq .raw_level "LOG" -}}info
+            {{- else if eq .raw_level "ERROR" -}}error
+            {{- else if eq .raw_level "WARN" -}}warn
+            {{- else if eq .raw_level "DEBUG" -}}debug
+            {{- else if eq .raw_level "VERBOSE" -}}verbose
+            {{- else -}}info{{- end -}}
+      - labels:
+          level:
+
+  # --- smarttj-ai (/logs/*.log) ---
+  - job_name: smarttj-ai-files
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: smarttj-logs
+          service: smarttj-ai
+          source: file
+          __path__: /var/log/smarttj/ai/*.log
+    pipeline_stages:
+      - regex:
+          source: filename
+          expression: '.*/(?P<log_type>combined|error)-\d{4}-\d{2}-\d{2}\.log$'
+      - json:
+          expressions:
+            level: level
+            message: message
+            context: context
+            timestamp: timestamp
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - labels:
+          level:
+          context:
+          log_type:
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+          action_on_failure: skip
+
+  # --- smarttj-realtime (/logs/*.log) ---
+  - job_name: smarttj-realtime-files
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: smarttj-logs
+          service: smarttj-realtime
+          source: file
+          __path__: /var/log/smarttj/realtime/*.log
+    pipeline_stages:
+      - regex:
+          source: filename
+          expression: '.*/(?P<log_type>combined|error)-\d{4}-\d{2}-\d{2}\.log$'
+      - json:
+          expressions:
+            level: level
+            message: message
+            context: context
+            timestamp: timestamp
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - labels:
+          level:
+          context:
+          log_type:
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+          action_on_failure: skip
+
+  # --- smarttj-worker (/logs/*.log) ---
+  - job_name: smarttj-worker-files
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: smarttj-logs
+          service: smarttj-worker
+          source: file
+          __path__: /var/log/smarttj/worker/*.log
+    pipeline_stages:
+      - regex:
+          source: filename
+          expression: '.*/(?P<log_type>combined|error)-\d{4}-\d{2}-\d{2}\.log$'
+      - json:
+          expressions:
+            level: level
+            message: message
+            context: context
+            timestamp: timestamp
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - labels:
+          level:
+          context:
+          log_type:
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+          action_on_failure: skip
+
+  # ============================================================================
+  # 2. DOCKER КОНТЕЙНЕРЫ (stdout / stderr всех контейнеров через Docker Socket)
+  # ============================================================================
+  - job_name: docker-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      # Имя контейнера без начального слэша
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+
+      # Поток вывода (stdout / stderr)
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'
+
+      # Docker Compose проект и сервис
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'compose_project'
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'compose_service'
+
+      # По умолчанию берём имя контейнера или compose_service как service
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'service'
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        regex: '(.+)'
+        target_label: 'service'
+      - source_labels: ['__meta_docker_container_label_service']
+        regex: '(.+)'
+        target_label: 'service'
+
+      # Нормализация имен микросервисов SmartTJ
+      - source_labels: ['service']
+        regex: '^(backend|smarttj-backend.*)$'
+        replacement: 'smarttj-backend'
+        target_label: 'service'
+      - source_labels: ['service']
+        regex: '^(ai|smarttj-ai.*)$'
+        replacement: 'smarttj-ai'
+        target_label: 'service'
+      - source_labels: ['service']
+        regex: '^(realtime|smarttj-realtime.*)$'
+        replacement: 'smarttj-realtime'
+        target_label: 'service'
+      - source_labels: ['service']
+        regex: '^(worker|smarttj-worker.*)$'
+        replacement: 'smarttj-worker'
+        target_label: 'service'
+      - source_labels: ['service']
+        regex: '^(n8n|smarttj-n8n.*)$'
+        replacement: 'smarttj-n8n'
+        target_label: 'service'
+
+      # Исключаем сам promtail и loki во избежание рекурсии логов
+      - source_labels: ['container']
+        regex: '^(promtail|loki)$'
+        action: drop
+
+      # Общие метки для Docker-источника
+      - replacement: 'smarttj-logs'
+        target_label: 'job'
+      - replacement: 'docker'
+        target_label: 'source'
+      - replacement: 'container'
+        target_label: 'log_type'
+
+    pipeline_stages:
+      # Очистка ANSI цветовых кодов из консольных логов NestJS
+      - replace:
+          expression: '\x1b\[[0-9;]*[a-zA-Z]'
+          replace: ''
+      # Извлечение уровня лога и контекста из формата NestJS / стандартных логов
+      - regex:
+          expression: '(?:(?P<nest_level>LOG|ERROR|WARN|DEBUG|VERBOSE)\s+(?:\[(?P<context>[^\]]+)\]\s+)?|level=(?P<kv_level>info|warn|error|debug)|(?P<pg_level>FATAL|ERROR|WARNING|LOG):)'
+      - template:
+          source: level
+          template: >-
+            {{- if eq .nest_level "LOG" -}}info
+            {{- else if eq .nest_level "ERROR" -}}error
+            {{- else if eq .nest_level "WARN" -}}warn
+            {{- else if eq .nest_level "DEBUG" -}}debug
+            {{- else if eq .nest_level "VERBOSE" -}}verbose
+            {{- else if .kv_level -}}{{ .kv_level }}
+            {{- else if eq .pg_level "FATAL" -}}error
+            {{- else if eq .pg_level "ERROR" -}}error
+            {{- else if eq .pg_level "WARNING" -}}warn
+            {{- else if eq .pg_level "LOG" -}}info
+            {{- else if eq .stream "stderr" -}}error
+            {{- else -}}info{{- end -}}
+      - labels:
+          level:
+          context:

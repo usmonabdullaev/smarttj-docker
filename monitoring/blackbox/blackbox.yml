@@ -1,0 +1,28 @@
+modules:
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+      valid_status_codes: [200, 201, 204]
+      method: GET
+      follow_redirects: true
+      preferred_ip_protocol: "ip4"
+
+  # Для микросервисов без публичного GET-роута (например smarttj-ai с POST /v1/ask),
+  # где ответ 2xx/401/403/404 означает, что HTTP-сервер жив и отвечает.
+  http_alive:
+    prober: http
+    timeout: 5s
+    http:
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+      valid_status_codes: [200, 201, 204, 400, 401, 403, 404, 405]
+      method: GET
+      follow_redirects: true
+      preferred_ip_protocol: "ip4"
+
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: "ip4"

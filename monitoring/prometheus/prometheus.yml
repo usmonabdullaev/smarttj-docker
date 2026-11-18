@@ -1,0 +1,146 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: 'smarttj'
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # 1. Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # 2. Системные метрики сервера (CPU, RAM, Disk, Network, Load)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service: 'host-system'
+
+  # 3. Метрики Docker-контейнеров и состояние всех микросервисов (cAdvisor)
+  - job_name: 'cadvisor'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['cadvisor:8080']
+    metric_relabel_configs:
+      # Убираем корневые/пустые cgroup-метрики без имени контейнера
+      - source_labels: ['name']
+        regex: '^$'
+        action: drop
+      # Создаём чистое имя контейнера без ведущего слэша
+      - source_labels: ['name']
+        regex: '^/?(.*)$'
+        target_label: 'container'
+      # По умолчанию service_name равен имени контейнера
+      - source_labels: ['container']
+        target_label: 'service_name'
+      # Если есть метка compose service или кастомная метка service
+      - source_labels: ['container_label_com_docker_compose_service']
+        regex: '(.+)'
+        target_label: 'service_name'
+      - source_labels: ['container_label_service']
+        regex: '(.+)'
+        target_label: 'service_name'
+      # Нормализация имен микросервисов SmartTJ (включая масштабируемые реплики backend)
+      - source_labels: ['container']
+        regex: '.*(backend|smarttj-backend).*'
+        replacement: 'smarttj-backend'
+        target_label: 'service_name'
+      - source_labels: ['container']
+        regex: '.*(smarttj-ai|^ai$).*'
+        replacement: 'smarttj-ai'
+        target_label: 'service_name'
+      - source_labels: ['container']
+        regex: '.*(smarttj-realtime|^realtime$).*'
+        replacement: 'smarttj-realtime'
+        target_label: 'service_name'
+      - source_labels: ['container']
+        regex: '.*(smarttj-worker|^worker$).*'
+        replacement: 'smarttj-worker'
+        target_label: 'service_name'
+      - source_labels: ['container']
+        regex: '.*(smarttj-n8n|^n8n$).*'
+        replacement: 'smarttj-n8n'
+        target_label: 'service_name'
+      - source_labels: ['container']
+        regex: '^(postgres|smarttj-postgres)$'
+        replacement: 'postgres'
+        target_label: 'service_name'
+      - source_labels: ['container']
+        regex: '^(redis|smarttj-redis)$'
+        replacement: 'redis'
+        target_label: 'service_name'
+
+  # 4. Метрики PostgreSQL 18
+  - job_name: 'postgres-exporter'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+        labels:
+          service: 'postgres'
+
+  # 5. Метрики Redis 8 (Кэш и очереди BullMQ)
+  - job_name: 'redis-exporter'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          service: 'redis'
+
+  # 6. Метрики Loki (система сбора логов)
+  - job_name: 'loki'
+    static_configs:
+      - targets: ['loki:3100']
+        labels:
+          service: 'loki'
+
+  # 7. HTTP Healthcheck микросервисов с публичным 200 OK эндпоинтом
+  - job_name: 'microservices-http'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://backend:3000/api/server/status
+        labels:
+          service: 'smarttj-backend'
+          role: 'api'
+      - targets:
+          - http://smarttj-realtime:3000/
+        labels:
+          service: 'smarttj-realtime'
+          role: 'websocket'
+      - targets:
+          - http://smarttj-n8n:5678/healthz
+        labels:
+          service: 'smarttj-n8n'
+          role: 'automation'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # 8. HTTP проверка доступности AI-микросервиса (POST /v1/ask защищён InternalAuthGuard)
+  - job_name: 'microservices-http-alive'
+    metrics_path: /probe
+    params:
+      module: [http_alive]
+    static_configs:
+      - targets:
+          - http://smarttj-ai:3000/v1
+        labels:
+          service: 'smarttj-ai'
+          role: 'ai'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

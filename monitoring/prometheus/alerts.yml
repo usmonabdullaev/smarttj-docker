@@ -1,0 +1,69 @@
+groups:
+  - name: smarttj_system_alerts
+    interval: 30s
+    rules:
+      - alert: HighHostCpuUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 85
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Высокая нагрузка на процессор сервера (> 85%)"
+          description: "Загрузка CPU держится выше 85% более 2 минут (текущее значение: {{ $value | printf \"%.1f\" }}%)."
+
+      - alert: HighHostMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Высокое потребление оперативной памяти RAM (> 85%)"
+          description: "Использование ОЗУ превысило 85% (текущее значение: {{ $value | printf \"%.1f\" }}%)."
+
+      - alert: LowDiskSpace
+        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Мало свободного места на диске (> 85% занято)"
+          description: "Раздел / заполнен на {{ $value | printf \"%.1f\" }}%."
+
+  - name: smarttj_microservices_alerts
+    interval: 15s
+    rules:
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "База данных PostgreSQL недоступна"
+          description: "Экспортер PostgreSQL сообщает pg_up == 0 более 30 секунд."
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Кэш/Очереди Redis недоступны"
+          description: "Экспортер Redis сообщает redis_up == 0 более 30 секунд."
+
+      - alert: MicroserviceHttpDown
+        expr: probe_success == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Микросервис {{ $labels.service }} не отвечает по HTTP"
+          description: "Эндпоинт {{ $labels.instance }} сервиса {{ $labels.service }} недоступен более 1 минуты."
+
+      - alert: WorkerContainerDown
+        expr: absent(container_last_seen{service_name="smarttj-worker"}) or (time() - max(container_last_seen{service_name="smarttj-worker"}) > 60)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Фоновый воркер smarttj-worker остановлен"
+          description: "Контейнер smarttj-worker не обнаружен среди запущенных контейнеров более 60 секунд."

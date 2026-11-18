@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: 'SmartTJ Dashboards'
+    orgId: 1
+    folder: 'SmartTJ Monitoring'
+    folderUid: 'smarttj-monitoring'
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 15
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

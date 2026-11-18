@@ -1,4 +1,7 @@
 services:
+  # ============================================================================
+  # БАЗЫ ДАННЫХ И ОЧЕРЕДИ (PostgreSQL 18 & Redis 8)
+  # ============================================================================
   postgres:
     image: postgres:18
     container_name: postgres
@@ -11,6 +14,10 @@ services:
 
     volumes:
       - postgres_data:/var/lib/postgresql
+
+    labels:
+      logging: "promtail"
+      service: "postgres"
 
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -30,6 +37,10 @@ services:
     volumes:
       - redis-data:/data
 
+    labels:
+      logging: "promtail"
+      service: "redis"
+
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ping"]
       interval: 10s
@@ -46,9 +57,189 @@ services:
     networks:
       - smarttj-network
 
+  # ============================================================================
+  # ЦЕНТРАЛИЗОВАННЫЙ СБОР ЛОГОВ (Loki + Promtail)
+  # Собирает логи из /logs/* (backend, ai, realtime, worker) + Docker контейнеры
+  # ============================================================================
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+
+    networks:
+      - smarttj-network
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+
+    volumes:
+      - ./monitoring/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      # Файловые логи /logs/* из окружений микросервисов
+      - ${BACKEND_LOGS_PATH:-../smarttj-backend/logs}:/var/log/smarttj/backend:ro
+      - ${AI_LOGS_PATH:-../smarttj-ai/logs}:/var/log/smarttj/ai:ro
+      - ${REALTIME_LOGS_PATH:-../smarttj-realtime/logs}:/var/log/smarttj/realtime:ro
+      - ${WORKER_LOGS_PATH:-../smarttj-worker/logs}:/var/log/smarttj/worker:ro
+      # Docker-логи всех контейнеров
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - promtail_positions:/tmp
+
+    depends_on:
+      - loki
+
+    networks:
+      - smarttj-network
+
+  # ============================================================================
+  # МОНИТОРИНГ СИСТЕМЫ И МИКРОСЕРВИСОВ (Prometheus + Exporters)
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+
+    depends_on:
+      - node-exporter
+      - cadvisor
+      - blackbox-exporter
+
+    networks:
+      - smarttj-network
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+
+    networks:
+      - smarttj-network
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+
+    networks:
+      - smarttj-network
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    container_name: postgres-exporter
+    restart: unless-stopped
+
+    environment:
+      DATA_SOURCE_URI: postgres:5432/${DATABASE_NAME}?sslmode=disable
+      DATA_SOURCE_USER: ${DATABASE_USER}
+      DATA_SOURCE_PASS: ${DATABASE_PASSWORD}
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    networks:
+      - smarttj-network
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    container_name: redis-exporter
+    restart: unless-stopped
+
+    environment:
+      REDIS_ADDR: redis://redis:6379
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    networks:
+      - smarttj-network
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/blackbox_exporter/config.yml'
+
+    volumes:
+      - ./monitoring/blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+
+    networks:
+      - smarttj-network
+
+  # ============================================================================
+  # UI ИНТЕРФЕЙС МОНИТОРИНГА И ЛОГОВ (Grafana)
+  # Порт настраивается через GRAFANA_PORT в .env
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: grafana
+    restart: unless-stopped
+
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/smarttj-overview.json
+
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+    depends_on:
+      - prometheus
+      - loki
+
+    networks:
+      - smarttj-network
+
 volumes:
   postgres_data:
   redis-data:
+  loki_data:
+  promtail_positions:
+  prometheus_data:
+  grafana_data:
 
 networks:
   smarttj-network:
